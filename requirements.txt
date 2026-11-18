@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+alembic
+pydantic-settings
+pytest
+httpx
+aio-pika
+
+pywebpush
+aiohttp
+prometheus-client==0.26.0
