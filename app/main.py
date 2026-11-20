@@ -213,7 +213,6 @@ def create_notification(
 
         return serialize_notification(existing)
 
-    db.refresh(new_notification)
     return serialize_notification(new_notification)
 
 
