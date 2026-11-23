@@ -1125,3 +1125,97 @@ def test_unhandled_consumer_exception_increments_metric_and_requeues(
     assert message.nacked is True
     assert message.acked is False
     assert message.processed is True
+
+
+def test_transient_provider_failure_then_retry_succeeds(
+    monkeypatch,
+    db_session,
+):
+    from app.providers.web_push_provider import TransientPushError
+
+    bind_test_sessions(monkeypatch, db_session)
+
+    notification = create_notification(
+        db_session,
+        status="processing",
+    )
+
+    subscription = create_subscription(
+        db_session,
+        "transient-retry-success",
+    )
+
+    delivery = create_delivery(
+        db_session,
+        notification.id,
+        subscription.id,
+        status="queued",
+        attempts=0,
+    )
+
+    class FlakyProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def send(self, subscription_info, payload):
+            self.calls += 1
+
+            if self.calls == 1:
+                raise TransientPushError(
+                    "Simulated temporary push-service failure"
+                )
+
+            class SuccessResult:
+                status_code = 201
+
+            return SuccessResult()
+
+    provider = FlakyProvider()
+
+    # First attempt: provider temporarily fails.
+    asyncio.run(
+        push_consumer.deliver_pending(
+            notification.id,
+            notification.title,
+            notification.body,
+            notification.target_url,
+            provider,
+            redelivered=False,
+        )
+    )
+
+    db_session.expire_all()
+
+    first_result = db_session.get(
+        PushDelivery,
+        delivery.id,
+    )
+
+    assert first_result.status == "retrying"
+    assert first_result.attempts == 1
+    assert first_result.last_error is not None
+
+    # Second attempt: retry succeeds.
+    asyncio.run(
+        push_consumer.deliver_pending(
+            notification.id,
+            notification.title,
+            notification.body,
+            notification.target_url,
+            provider,
+            redelivered=False,
+        )
+    )
+
+    db_session.expire_all()
+
+    final_result = db_session.get(
+        PushDelivery,
+        delivery.id,
+    )
+
+    assert provider.calls == 2
+    assert final_result.status == "accepted"
+    assert final_result.attempts == 2
+    assert final_result.push_status_code == 201
+    assert final_result.accepted_at is not None
