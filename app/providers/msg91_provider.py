@@ -1,4 +1,3 @@
-
 import logging
 import re
 from typing import Any
@@ -44,7 +43,7 @@ class MSG91Provider(SMSProvider):
             )
 
         if timeout_seconds <= 0:
-            raise ValueError("MSG91 timeout must be greater than zero")
+            raise ValueError("Timeout must be greater than zero")
 
         self.auth_key = auth_key
         self.template_id = template_id
@@ -54,13 +53,6 @@ class MSG91Provider(SMSProvider):
 
     @staticmethod
     def _normalize_recipient(recipient: str) -> str:
-        """
-        Convert an international phone number into MSG91 format.
-
-        Example:
-            +91 98765-43210 -> 919876543210
-        """
-
         if not isinstance(recipient, str):
             raise PermanentProviderError(
                 "Recipient must be a string"
@@ -84,9 +76,7 @@ class MSG91Provider(SMSProvider):
         return normalized
 
     @staticmethod
-    def _extract_error_message(
-        payload: dict[str, Any],
-    ) -> str:
+    def _extract_error_message(payload: dict[str, Any]) -> str:
         detail = (
             payload.get("message")
             or payload.get("error")
@@ -126,10 +116,6 @@ class MSG91Provider(SMSProvider):
     def _is_provider_success(
         response_data: dict[str, Any],
     ) -> bool:
-        """
-        Require an explicit success indicator from MSG91.
-        """
-
         response_type = str(
             response_data.get("type", "")
         ).lower()
@@ -148,6 +134,7 @@ class MSG91Provider(SMSProvider):
         recipient: str,
         message: str,
         idempotency_key: str,
+        attempt_number: int = 1,
     ) -> ProviderSendResult:
 
         if (
@@ -164,8 +151,6 @@ class MSG91Provider(SMSProvider):
             recipient
         )
 
-        # The variable name must match the approved MSG91
-        # template variable exactly, including case.
         recipient_data = {
             "mobiles": normalized_recipient,
             self.message_variable: message,
@@ -204,7 +189,6 @@ class MSG91Provider(SMSProvider):
                 "Unable to connect to MSG91"
             ) from exc
 
-        # Temporary HTTP failures should be retried.
         if (
             response.status_code in {408, 425, 429}
             or response.status_code >= 500
@@ -214,8 +198,6 @@ class MSG91Provider(SMSProvider):
                 f"{response.status_code}"
             )
 
-        # Other HTTP 4xx responses generally indicate a
-        # permanent request or authentication problem.
         if response.status_code >= 400:
             raise PermanentProviderError(
                 f"MSG91 rejected the request with HTTP "
@@ -236,8 +218,6 @@ class MSG91Provider(SMSProvider):
                 "MSG91 returned an unexpected response format"
             )
 
-        # HTTP 200 does not necessarily mean SMS submission
-        # was accepted. Inspect the provider response body.
         if self._is_provider_error(response_data):
             error_message = self._extract_error_message(
                 response_data

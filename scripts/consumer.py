@@ -368,6 +368,8 @@ async def process_message(
                 notification.status = "processing"
                 notification.provider_attempts += 1
                 notification.provider_name = settings.SMS_PROVIDER
+                # Capture the committed, persistent attempt number for the provider.
+                attempt_number = notification.provider_attempts
 
         # Transaction commits here.
 
@@ -418,6 +420,7 @@ async def process_message(
             recipient=payload["recipient"],
             message=payload["message"],
             idempotency_key=provider_idempotency_key,
+            attempt_number=attempt_number,
         )
 
     except PermanentProviderError as exc:

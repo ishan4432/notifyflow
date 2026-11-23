@@ -1,4 +1,3 @@
-
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -30,6 +29,7 @@ class SMSProvider(ABC):
         recipient: str,
         message: str,
         idempotency_key: str,
+        attempt_number: int = 1,
     ) -> ProviderSendResult:
         """Submit an SMS and return the provider response."""
         raise NotImplementedError
