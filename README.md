@@ -1,65 +1,67 @@
-# NotifyFlow 🚀
-### Scalable, Event-Driven Notification Platform
+# NotifyFlow
 
-NotifyFlow is an asynchronous notification delivery platform built with **Python, FastAPI, PostgreSQL, and RabbitMQ**. It supports SMS and browser Web Push notifications through independent processing pipelines.
+**A scalable, event-driven notification platform for asynchronous SMS and Web Push delivery.**
 
-The system focuses on reliable event publishing, asynchronous processing, retry handling, idempotency, delivery tracking, and observability.
+NotifyFlow is a backend notification system built with FastAPI, PostgreSQL, RabbitMQ, and Python workers. It uses asynchronous message processing, transactional outbox publishing, retry queues, dead-letter queues, and idempotency to improve reliability.
 
----
+## 🚀 Features
 
-## ✨ Features
-
-- **SMS Notifications:** Submit SMS notifications through a REST API.
-- **Web Push Notifications:** Register browser subscriptions and send push notifications.
-- **Asynchronous Processing:** Independent background consumers for SMS and Push.
-- **Transactional Outbox:** Persist notification events and publish them reliably.
-- **Publisher Confirms:** Wait for RabbitMQ broker confirmation.
-- **Retry Mechanism:** Handle transient failures using delayed queues.
-- **Dead Letter Queues:** Isolate permanently failed or invalid messages.
-- **Idempotency:** Prevent duplicate push notification creation.
-- **Consumer Inbox:** Track processed SMS events to help prevent duplicate processing.
-- **Delivery Receipts:** Process SMS delivery status callbacks.
-- **Observability:** Prometheus metrics and Grafana dashboards.
-- **Database Migrations:** Alembic-based schema management.
+- REST APIs built with FastAPI.
+- Asynchronous SMS notification processing.
+- Browser Web Push notifications using VAPID.
+- PostgreSQL persistence with SQLAlchemy and Alembic.
+- RabbitMQ-based message processing.
+- Transactional outbox pattern.
+- Publisher confirms for reliable message publishing.
+- Retry queues and dead-letter queues.
+- Idempotent notification processing.
+- SMS delivery receipt handling.
+- Push subscription and delivery tracking.
+- Push notification recovery for interrupted processing.
+- Prometheus metrics.
+- Grafana dashboards and alert rules.
+- Configurable mock SMS provider for failure testing.
+- Automated tests using Pytest.
 
 ## 🏗️ Architecture
 
+NotifyFlow separates API request handling from notification delivery.
+
+The API persists notifications and outbox events in PostgreSQL. Dedicated publishers transfer pending events to RabbitMQ. Independent consumers process SMS and Web Push messages through their respective providers.
+
 ```mermaid
 flowchart TD
-    Client[Client Application] --> API[FastAPI]
+    A[Client] --> B[FastAPI]
+    B --> C[(PostgreSQL)]
+    C --> D[SMS Outbox Publisher]
+    C --> E[Push Outbox Publisher]
 
-    API --> DB[(PostgreSQL)]
+    D --> F[RabbitMQ SMS Queue]
+    E --> G[RabbitMQ Push Queue]
 
-    DB --> SO[SMS Outbox Publisher]
-    DB --> PO[Push Outbox Publisher]
+    F --> H[SMS Consumer]
+    G --> I[Push Consumer]
 
-    SO --> SQ[RabbitMQ SMS Queue]
-    PO --> PQ[RabbitMQ Push Queue]
+    H --> J[SMS Provider]
+    I --> K[Web Push Provider]
 
-    SQ --> SC[SMS Consumer]
-    PQ --> PC[Push Consumer]
+    H --> L[SMS Retry Queue]
+    L --> F
+    H --> M[SMS DLQ]
 
-    SC --> SP[SMS Provider]
-    PC --> WP[Web Push Provider]
+    I --> N[Push Retry Queue]
+    N --> G
+    I --> O[Push Recovery Queue]
+    O --> G
+    I --> P[Push DLQ]
 
-    SC --> SR[SMS Retry Queue]
-    SC --> SD[SMS DLQ]
-
-    PC --> PR[Push Retry Queue]
-    PC --> REC[Push Recovery Queue]
-    PC --> PD[Push DLQ]
-
-    SR --> SQ
-    PR --> PQ
-    REC --> PQ
-
-    API --> PROM[Prometheus]
-    SC --> PROM
-    PC --> PROM
-    PROM --> GRAF[Grafana]
+    B --> Q[Prometheus]
+    H --> Q
+    I --> Q
+    Q --> R[Grafana]
 ```
 
-## 🛠️ Technology Stack
+### Technology Stack
 
 | Component | Technology |
 |---|---|
@@ -67,15 +69,16 @@ flowchart TD
 | API framework | FastAPI |
 | Database | PostgreSQL |
 | ORM | SQLAlchemy |
-| Migrations | Alembic |
+| Database migrations | Alembic |
 | Message broker | RabbitMQ |
-| Async messaging | aio-pika |
+| RabbitMQ client | aio-pika |
 | SMS provider | MSG91 / Mock Provider |
 | Web Push | pywebpush / VAPID |
 | Metrics | Prometheus |
 | Dashboards | Grafana |
 | Validation | Pydantic |
 | Testing | Pytest |
+| Containerization | Docker |
 
 ## 🔄 Notification Workflows
 
@@ -88,7 +91,7 @@ flowchart TD
 5. SMS consumer processes the message.
 6. Configured SMS provider handles the delivery request.
 7. Transient failures enter the delayed retry queue.
-8. Invalid or exhausted messages are routed to the DLQ.
+8. Invalid or exhausted messages are routed to the dead-letter queue.
 9. Delivery receipts update notification status.
 
 **SMS queues**
@@ -97,9 +100,11 @@ flowchart TD
 |---|---|
 | `notifyflow.notifications` | Main queue |
 | `notifyflow.retry` | Delayed retry queue |
-| `notifyflow.dlq` | Dead letter queue |
+| `notifyflow.dlq` | Dead-letter queue |
 
-The SMS retry delay is 5 seconds, with a maximum of three attempts.
+The SMS retry delay is 5 seconds, with a maximum of three processing attempts.
+
+The mock provider supports configurable transient failures to test retry behavior.
 
 ### Web Push Pipeline
 
@@ -109,164 +114,192 @@ The SMS retry delay is 5 seconds, with a maximum of three attempts.
 4. Push outbox publisher publishes the event.
 5. Push consumer processes the event.
 6. Consumer fans out the notification to registered, non-expired subscriptions.
-7. Delivery results are tracked and eligible failures are retried.
-8. Failed events are isolated in the push DLQ.
+7. Delivery results are tracked for individual subscriptions.
+8. Eligible failures are retried.
+9. Expired subscriptions are marked accordingly.
+10. Failed events are isolated in the push dead-letter queue.
 
-**Push queues**
+**Web Push queues**
 
 | Queue | Purpose |
 |---|---|
 | `notifyflow.push.notifications` | Main queue |
 | `notifyflow.push.retry` | Delayed retry queue |
-| `notifyflow.push.recovery` | Delivery lease recovery |
-| `notifyflow.push.dlq` | Dead letter queue |
+| `notifyflow.push.recovery` | Interrupted-processing recovery |
+| `notifyflow.push.dlq` | Dead-letter queue |
 
-The retry delay is 5 seconds. The recovery queue uses a delay based on a 120-second delivery lease.
+Push processing uses a maximum of three normal retry attempts.
 
-## 🔐 Reliability and Design Concepts
+A processing lease of 120 seconds and a recovery delay of 125 seconds help recover notifications interrupted during processing.
+
+## 🛡️ Reliability and Idempotency
 
 ### Transactional Outbox
 
-Notification creation and outbox event creation happen in the same PostgreSQL transaction.
+Notification records and their corresponding outbox events are persisted in the same database transaction.
 
-Separate publisher processes publish pending events to RabbitMQ. Events are marked as published after broker confirmation.
+This prevents a notification from being committed without its publishing event being recorded.
 
-This avoids losing the persisted event when the application commits a notification but cannot immediately publish it.
+Dedicated publishers transfer pending outbox events to RabbitMQ using publisher confirmations.
 
 ### Idempotency
 
 The Push API supports the `Idempotency-Key` request header.
 
-- Same key and same payload: returns the existing notification.
-- Same key with a different payload: returns HTTP 409.
-- PostgreSQL conflict handling protects against concurrent duplicate requests.
+- Repeated requests with the same key and payload return the existing notification.
+- Reusing the same key with a different payload returns HTTP 409.
+- PostgreSQL conflict handling prevents duplicate notification and outbox creation.
 
-### Consumer Inbox
+The SMS consumer uses an inbox/idempotency mechanism and a stable provider idempotency key to help prevent duplicate processing and provider submissions.
 
-The SMS consumer uses a consumer inbox table with a unique event identifier to help prevent duplicate event processing.
+### Retry and Recovery
 
-### Retry and Dead Letter Handling
-
-Transient failures are handled through delayed retry queues. Invalid messages and messages that exhaust their retry attempts can be routed to dead letter queues.
+- Transient provider failures are retried.
+- Retry queues use a 5-second delay.
+- Messages exceeding the configured retry limit are isolated in dead-letter queues.
+- Push processing uses delivery records and leases to recover interrupted work.
+- Publisher confirms ensure the original RabbitMQ message is acknowledged only after successful forwarding.
 
 ## 📡 API Reference
 
-### Core API
+The following endpoints are available:
 
-| Method | Endpoint | Description |
+| Method | Endpoint | Purpose |
 |---|---|---|
 | GET | `/` | Root endpoint |
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus metrics |
 | POST | `/notifications` | Submit SMS notification |
-| GET | `/notifications` | List notifications |
-| GET | `/notifications/{notification_id}` | Get notification details |
-| POST | `/webhooks/dlr` | Receive SMS delivery receipts |
+| GET | `/notifications` | Retrieve notifications |
+| GET | `/notifications/{notification_id}` | Retrieve notification details |
+| POST | `/webhooks/dlr` | SMS delivery receipt webhook |
+| POST | `/push/subscriptions` | Register or update a push subscription |
+| POST | `/push/notifications` | Submit a Web Push notification |
 
-### Push API
+Interactive API documentation:
 
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/push/subscriptions` | Register or update browser subscription |
-| POST | `/push/notifications` | Create push notification |
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
-### Submit an SMS
+### Web Push Request Example
 
-`POST /notifications`
+```bash
+curl -X POST http://localhost:8000/push/notifications \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: notifyflow-demo-001" \
+  -d '{
+    "title": "NotifyFlow Demo",
+    "body": "Your notification has arrived!",
+    "target_url": "/"
+  }'
+```
+
+The API returns HTTP 202 when the request is accepted for asynchronous processing.
+
+Example response:
 
 ```json
 {
-  "to": "+919876543210",
-  "message": "Hello from NotifyFlow!",
-  "priority": "normal"
-}
-```
-
-Priority values: `low`, `normal`, `high`.
-
-A successful asynchronous submission returns HTTP `202 Accepted`.
-
-### Register a Browser Subscription
-
-`POST /push/subscriptions`
-
-```json
-{
-  "endpoint": "https://push-service.example/subscription",
-  "keys": {
-    "p256dh": "BASE64URL_PUBLIC_KEY",
-    "auth": "BASE64URL_AUTH_SECRET"
-  }
-}
-```
-
-Use the actual endpoint and keys generated by the browser Push API. These values are placeholders.
-
-### Create a Push Notification
-
-`POST /push/notifications`
-
-Header:
-
-```http
-Idempotency-Key: notification-unique-001
-```
-
-Request:
-
-```json
-{
-  "title": "NotifyFlow",
+  "id": 21,
+  "title": "NotifyFlow Demo",
   "body": "Your notification has arrived!",
-  "target_url": "/"
+  "target_url": "/",
+  "status": "queued",
+  "duplicate": false
 }
 ```
 
-A newly queued notification returns HTTP `202 Accepted`.
+The notification status is updated as background processing progresses.
 
 ## 📊 Monitoring and Observability
 
-NotifyFlow uses Prometheus and Grafana to monitor application and consumer behavior.
+NotifyFlow exposes Prometheus metrics for API and worker activity.
 
-Monitoring includes:
+Monitoring covers:
 
-- Application and worker metrics.
-- SMS and Push delivery results.
-- Consumer processing duration.
-- Consumer errors.
-- Dead letter queue events.
+- API request counts and latency.
+- Notification processing duration.
+- SMS and push delivery results.
 - Provider attempts.
-- Grafana dashboards and alert rules.
+- Consumer errors.
+- Retry and dead-letter events.
+- Queue activity.
+- Worker processing behavior.
 
-Performance evaluation will cover:
+Grafana provides dashboards and configured alert rules for operational visibility.
 
-- Throughput.
-- p50, p95 and p99 latency.
-- Delivery success and failure rates.
-- Retry and DLQ rates.
-- Queue lag.
-- Worker concurrency.
-- Resource consumption.
+### Benchmark Results
 
-**Performance figures will be published only after reproducible benchmark runs.**
+Local API benchmark results using:
+
+- 2,000 requests per measured run.
+- 20 concurrent requests.
+- 20 warm-up requests excluded from measured results.
+- Three measured runs.
+- PostgreSQL connection pool size: 15.
+- Maximum overflow connections: 0.
+- Pool timeout: 30 seconds.
+
+**Three-run median results**
+
+| Metric | Result |
+|---|---:|
+| Throughput | 324.49 requests/second |
+| Average latency | 61.33 ms |
+| p50 latency | 61.26 ms |
+| p95 latency | 78.10 ms |
+| p99 latency | 88.65 ms |
+| HTTP 202 acceptance | 100% |
+
+Each measured run achieved 2,000 successful HTTP 202 responses.
+
+### Baseline Comparison
+
+Compared with an earlier benchmark session using the same request count and concurrency:
+
+| Metric | Earlier baseline | Later benchmark |
+|---|---:|---:|
+| Throughput | 198.95 req/s | 324.49 req/s |
+| p95 latency | 147.603 ms | 78.10 ms |
+
+Observed differences:
+
+- Throughput: 63.10% higher.
+- p95 latency: 47.09% lower.
+
+These are observed differences between benchmark sessions. They do not establish that the connection-pool configuration alone caused the improvement.
+
+**Benchmark limitations**
+
+- Tests ran in a local development environment, not production.
+- HTTP 202 means API acceptance, not confirmed SMS or push delivery.
+- Hardware specifications and resource utilization were not recorded.
+- The benchmark does not establish production capacity.
+
+See the [detailed benchmark report](benchmarks/NOTIFYFLOW_BENCHMARK_REPORT.md).
 
 ## 🧪 Testing
 
-The project includes tests for:
+The project includes automated tests for:
 
 - API endpoints.
 - Notification processing.
 - SMS provider integration.
 - Push API and subscription validation.
 - Push consumer behavior.
-- Metrics.
+- Retry and recovery scenarios.
 - Provider factories.
+- Metrics.
+
+**Latest recorded full regression test result: 107 passed, 1 warning.**
 
 Run the test suite:
 
 ```bash
-pytest -v
+PYTHONPATH=. pytest -v
 ```
+
+The existing test warning relates to a Starlette/httpx deprecation notice; it did not cause a test failure.
 
 ## ⚙️ Configuration
 
@@ -288,7 +321,7 @@ NotifyFlow loads settings from environment variables and a local `.env` file.
 | `RABBITMQ_PASSWORD` | RabbitMQ password |
 | `RABBITMQ_VHOST` | RabbitMQ virtual host |
 
-Never commit `.env`, provider credentials, private keys, or other secrets.
+Never commit `.env`, provider credentials, VAPID private keys, or other secrets.
 
 ## 🚀 Local Development
 
@@ -325,6 +358,8 @@ pip install -r requirements.txt
 
 Create a local `.env` file containing the required database, RabbitMQ, webhook, and provider settings.
 
+Configure VAPID credentials and the SMS provider according to the selected provider.
+
 ### 5. Run database migrations
 
 ```bash
@@ -344,32 +379,35 @@ python scripts/setup_push_rabbitmq.py
 uvicorn app.main:app --reload
 ```
 
-API documentation:
-
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
 ### 8. Start consumers and publishers
 
-Run each command in a separate terminal:
+Run each command in a separate terminal with the virtual environment activated.
+
+**SMS consumer**
 
 ```bash
-python -m scripts.consumer
+PYTHONPATH=. python -m scripts.consumer
 ```
+
+**Push consumer**
 
 ```bash
-python -m scripts.push_consumer
+PYTHONPATH=. python -m scripts.push_consumer
 ```
+
+**SMS outbox publisher**
 
 ```bash
-python -m scripts.outbox_publisher
+PYTHONPATH=. python -m scripts.outbox_publisher
 ```
+
+**Push outbox publisher**
 
 ```bash
-python -m scripts.push_outbox_publisher
+PYTHONPATH=. python -m scripts.push_outbox_publisher
 ```
 
-Ensure PostgreSQL and RabbitMQ are running and configured first.
+Ensure PostgreSQL and RabbitMQ are running and configured before starting the services.
 
 ### 9. Start monitoring
 
@@ -383,8 +421,8 @@ docker compose -f docker-compose.monitoring.yml up -d
 
 Monitoring interfaces:
 
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3000
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3000`
 
 ## 📁 Project Structure
 
@@ -400,6 +438,9 @@ notifyflow/
 │   ├── push_schemas.py
 │   ├── schemas.py
 │   └── worker_metrics.py
+├── benchmarks/
+│   ├── NOTIFYFLOW_BENCHMARK_REPORT.md
+│   └── generate_report.py
 ├── migrations/
 │   └── versions/
 ├── monitoring/
@@ -423,11 +464,12 @@ notifyflow/
 
 ## 🛠️ Future Improvements
 
-- Reproducible load testing and performance benchmarking.
-- Additional reliability and failure-injection testing.
-- Deployment automation and container orchestration.
+- Complete application Docker deployment.
+- Kubernetes deployment and orchestration.
+- Production-scale load testing and resource monitoring.
 - Expanded operational dashboards and alert validation.
-- End-to-end integration testing with real provider environments.
+- End-to-end integration testing with real SMS provider environments.
+- Automated deployment and CI/CD workflows.
 
 ## 👨‍💻 Author
 
@@ -439,4 +481,3 @@ notifyflow/
 ---
 
 *NotifyFlow — Reliable, asynchronous notification delivery through event-driven architecture.*
-
