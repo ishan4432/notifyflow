@@ -1,0 +1,176 @@
+
+name: notifyflow-app
+
+# Shared image configuration
+x-notifyflow-image: &notifyflow-image
+  image: notifyflow:local
+
+# Shared environment variables
+x-app-environment: &app-environment
+  DATABASE_URL: "postgresql+psycopg://notifyflow_app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/notifyflow"
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USERNAME: "${RABBITMQ_USERNAME:?RABBITMQ_USERNAME is required}"
+  RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}"
+  RABBITMQ_VHOST: "${RABBITMQ_VHOST:-notifyflow}"
+  DLR_WEBHOOK_SECRET: "${DLR_WEBHOOK_SECRET:?DLR_WEBHOOK_SECRET is required}"
+
+services:
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notifyflow
+      POSTGRES_USER: notifyflow_app
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # RabbitMQ message broker
+  rabbitmq:
+    image: rabbitmq:4.4.0-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USERNAME:?RABBITMQ_USERNAME is required}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}"
+      RABBITMQ_DEFAULT_VHOST: "${RABBITMQ_VHOST:-notifyflow}"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Database migrations and RabbitMQ initialization
+  init:
+    <<: *notifyflow-image
+    build:
+      context: .
+    restart: "no"
+    env_file:
+      - .env
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - >
+        alembic upgrade head &&
+        python -m scripts.setup_rabbitmq &&
+        python -m scripts.setup_push_rabbitmq
+
+  # FastAPI application
+  api:
+    <<: *notifyflow-image
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # SMS consumer
+  sms-consumer:
+    <<: *notifyflow-image
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      <<: *app-environment
+      NOTIFYFLOW_SMS_CONSUMER_METRICS_HOST: "0.0.0.0"
+      NOTIFYFLOW_SMS_CONSUMER_METRICS_PORT: "9103"
+    ports:
+      - "127.0.0.1:9103:9103"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "scripts.consumer"]
+
+  # SMS outbox publisher
+  sms-publisher:
+    <<: *notifyflow-image
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      <<: *app-environment
+      NOTIFYFLOW_SMS_PUBLISHER_METRICS_HOST: "0.0.0.0"
+      NOTIFYFLOW_SMS_PUBLISHER_METRICS_PORT: "9104"
+    ports:
+      - "127.0.0.1:9104:9104"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "scripts.outbox_publisher"]
+
+  # Web Push consumer
+  push-consumer:
+    <<: *notifyflow-image
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file:
+      - .env
+    environment:
+      <<: *app-environment
+      NOTIFYFLOW_PUSH_METRICS_HOST: "0.0.0.0"
+      NOTIFYFLOW_PUSH_METRICS_PORT: "9101"
+      VAPID_PRIVATE_KEY_PATH: /run/secrets/vapid_private_key.pem
+    volumes:
+      - "${VAPID_PRIVATE_KEY_PATH:?VAPID_PRIVATE_KEY_PATH is required}:/run/secrets/vapid_private_key.pem:ro"
+    ports:
+      - "127.0.0.1:9101:9101"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "scripts.push_consumer"]
+
+  # Web Push outbox publisher
+  push-publisher:
+    <<: *notifyflow-image
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      <<: *app-environment
+      NOTIFYFLOW_PUSH_PUBLISHER_METRICS_HOST: "0.0.0.0"
+      NOTIFYFLOW_PUSH_PUBLISHER_METRICS_PORT: "9102"
+    ports:
+      - "127.0.0.1:9102:9102"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "scripts.push_outbox_publisher"]
+
+volumes:
+  postgres_data:
+    name: notifyflow-app-postgres-data
+
+  rabbitmq_data:
+    name: notifyflow-app-rabbitmq-data

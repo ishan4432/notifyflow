@@ -27,3 +27,9 @@ htmlcov/
 # Local backup files
 *.bak
 *.poolbak
+
+# Local documentation backup
+README.md.backup
+
+# Exploratory benchmark results
+benchmarks/api_results_*.csv

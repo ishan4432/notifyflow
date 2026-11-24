@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 class Settings(BaseSettings):
     # PostgreSQL
     DATABASE_URL: str
+    POSTGRES_PASSWORD: SecretStr | None = None
 
     # SMS provider
     SMS_PROVIDER: str = "mock"
